@@ -2,7 +2,16 @@
 """
 Bake OrcaSlicer 3MF into a single STL, applying negative-part booleans
 and fuzzy skin displacement from the project's slice settings.
-Usage: python3 bake_3mf.py 'input.3mf' 'output.stl'
+
+Usage:
+  python3 bake_3mf.py input.3mf output.stl
+  python3 bake_3mf.py input.3mf output.stl --fuzzy-skin all
+  python3 bake_3mf.py input.3mf output.stl --fuzzy-skin all --thickness 0.2 --point-distance 0.3
+
+Options:
+  --fuzzy-skin MODE        Override fuzzy skin mode: all, outside_only, none (default: read from 3MF)
+  --thickness MM           Displacement amount in mm (default: read from 3MF or 0.3)
+  --point-distance MM      Subdivision edge length in mm (default: read from 3MF or 0.8)
 """
 
 import sys
@@ -58,7 +67,7 @@ def extract_mesh_from_object(obj_elem, ns):
     )
 
 
-def bake_3mf(input_path, output_path):
+def bake_3mf(input_path, output_path, cli_overrides=None):
     print(f"Reading: {input_path}")
 
     with zipfile.ZipFile(input_path, "r") as zf:
@@ -84,6 +93,9 @@ def bake_3mf(input_path, output_path):
         if "Metadata/project_settings.config" in zf.namelist():
             with zf.open("Metadata/project_settings.config") as f:
                 project_settings = json.loads(f.read().decode("utf-8"))
+
+    if cli_overrides:
+        project_settings.update(cli_overrides)
 
     # Get subtype per part id from model_settings.config
     part_subtypes = {}
@@ -210,7 +222,21 @@ def apply_fuzzy_skin(mesh, settings):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 3:
-        print("Usage: python3 bake_3mf.py input.3mf output.stl")
-        sys.exit(1)
-    bake_3mf(sys.argv[1], sys.argv[2])
+    import argparse
+    parser = argparse.ArgumentParser(description="Bake OrcaSlicer 3MF to STL")
+    parser.add_argument("input", help="Input .3mf file")
+    parser.add_argument("output", help="Output .stl file")
+    parser.add_argument("--fuzzy-skin", choices=["all", "outside_only", "none"], default=None,
+                        help="Override fuzzy skin mode")
+    parser.add_argument("--thickness", type=float, default=None,
+                        help="Fuzzy skin displacement in mm")
+    parser.add_argument("--point-distance", type=float, default=None,
+                        help="Fuzzy skin subdivision edge length in mm")
+    args = parser.parse_args()
+    bake_3mf(args.input, args.output, cli_overrides={
+        k: v for k, v in {
+            "fuzzy_skin": args.fuzzy_skin,
+            "fuzzy_skin_thickness": str(args.thickness) if args.thickness else None,
+            "fuzzy_skin_point_distance": str(args.point_distance) if args.point_distance else None,
+        }.items() if v is not None
+    })
