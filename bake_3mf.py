@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Bake OrcaSlicer 3MF negative parts into a single merged STL.
+Bake OrcaSlicer 3MF into a single STL, applying negative-part booleans
+and fuzzy skin displacement from the project's slice settings.
 Usage: python3 bake_3mf.py 'input.3mf' 'output.stl'
 """
 
 import sys
+import json
 import zipfile
 import xml.etree.ElementTree as ET
 import numpy as np
 import trimesh
+from trimesh import remesh
 
 NS_CORE = "http://schemas.microsoft.com/3dmanufacturing/core/2015/02"
 
@@ -75,6 +78,12 @@ def bake_3mf(input_path, output_path):
             raw = f.read().decode("utf-8")
         raw = raw.replace('slic3rpe:', 'slic3rpe_')
         settings = ET.fromstring(raw)
+
+        # Load project_settings.config (JSON) for slice parameters
+        project_settings = {}
+        if "Metadata/project_settings.config" in zf.namelist():
+            with zf.open("Metadata/project_settings.config") as f:
+                project_settings = json.loads(f.read().decode("utf-8"))
 
     # Get subtype per part id from model_settings.config
     part_subtypes = {}
@@ -148,8 +157,10 @@ def bake_3mf(input_path, output_path):
     base = trimesh.util.concatenate(normal_meshes) if len(normal_meshes) > 1 else normal_meshes[0]
 
     if not negative_meshes:
-        print("No negative parts found, exporting base as-is.")
-        base.export(output_path)
+        print("No negative parts found, skipping boolean.")
+        result = base
+        result = apply_fuzzy_skin(result, project_settings)
+        result.export(output_path)
         print(f"Exported: {output_path}")
         return
 
@@ -166,9 +177,36 @@ def bake_3mf(input_path, output_path):
             except Exception as e2:
                 print(f"  Error: {e2} — skipping this cutter")
 
+    result = apply_fuzzy_skin(result, project_settings)
+
     print(f"\nExporting to: {output_path}")
     result.export(output_path)
     print(f"Done! Vertices: {len(result.vertices)}, Faces: {len(result.faces)}")
+
+
+def apply_fuzzy_skin(mesh, settings):
+    mode = settings.get("fuzzy_skin", "none")
+    if mode == "none":
+        return mesh
+
+    thickness = float(settings.get("fuzzy_skin_thickness", 0.3))
+    point_dist = float(settings.get("fuzzy_skin_point_distance", 0.8))
+    seed = 42
+
+    print(f"\nApplying fuzzy skin (mode={mode}, thickness={thickness}mm, point_distance={point_dist}mm)...")
+
+    verts, faces = remesh.subdivide_to_size(
+        mesh.vertices, mesh.faces, max_edge=point_dist, max_iter=12
+    )
+    subdivided = trimesh.Trimesh(vertices=verts, faces=faces, process=True)
+
+    rng = np.random.default_rng(seed)
+    normals = subdivided.vertex_normals
+    displacement = rng.uniform(-thickness, thickness, len(subdivided.vertices))
+    subdivided.vertices += normals * displacement[:, np.newaxis]
+
+    print(f"  {len(mesh.vertices)} -> {len(subdivided.vertices)} vertices after subdivision")
+    return subdivided
 
 
 if __name__ == "__main__":
